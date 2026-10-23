@@ -16,8 +16,8 @@ def fetch_text() -> str:
     with sync_playwright() as p:
         browser = p.chromium.launch()
         page = browser.new_page()
-        page.goto(URL, wait_until="networkidle", timeout=60000)
-        page.wait_for_timeout(5000)
+        page.goto(URL, wait_until="domcontentloaded", timeout=60000)
+        page.wait_for_timeout(10000)
         html = page.content()
         browser.close()
     soup = BeautifulSoup(html, "html.parser")
@@ -40,6 +40,8 @@ def notify(text: str) -> None:
 
 def main() -> None:
     new = fetch_text()
+    print("抓到內容長度:", len(new))
+    print(new[:500])
     old = STATE_FILE.read_text(encoding="utf-8") if STATE_FILE.exists() else None
 
     if old is None:
