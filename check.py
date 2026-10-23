@@ -1,37 +1,57 @@
-name: monitor
+#!/usr/bin/env python3
+"""單次檢查版 (給 GitHub Actions 用)。內容變動時透過 Telegram 通知。"""
+import difflib
+import os
+from pathlib import Path
 
-on:
-  schedule:
-    - cron: "*/10 * * * *"
-  workflow_dispatch:
+import requests
+from bs4 import BeautifulSoup
+from playwright.sync_api import sync_playwright
 
-permissions:
-  contents: write
+URL = "https://www.tigerairtw.com/zh-TW/news/261021"
+STATE_FILE = Path("last_content.txt")
 
-jobs:
-  check:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
+def fetch_text() -> str:
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page()
+        page.goto(URL, wait_until="networkidle", timeout=60000)
+        html = page.content()
+        browser.close()
+    soup = BeautifulSoup(html, "html.parser")
+    for tag in soup(["script", "style", "noscript"]):
+        tag.decompose()
+    lines = [ln.strip() for ln in soup.get_text("\n").splitlines()]
+    return "\n".join(ln for ln in lines if ln)
 
-      - name: Install
-        run: |
-          pip install requests beautifulsoup4 playwright
-          playwright install --with-deps chromium
 
-      - name: Check page
-        env:
-          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
-          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-        run: python check.py
+def notify(text: str) -> None:
+    token, chat_id = os.getenv("TG_BOT_TOKEN"), os.getenv("TG_CHAT_ID")
+    print(text)
+    if token and chat_id:
+        requests.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            data={"chat_id": chat_id, "text": text[:4000]},
+            timeout=15,
+        )
 
-      - name: Save state
-        run: |
-          git config user.name "monitor-bot"
-          git config user.email "bot@users.noreply.github.com"
-          git add last_content.txt
-          git diff --staged --quiet || (git commit -m "update content" && git push)
+
+def main() -> None:
+    new = fetch_text()
+    old = STATE_FILE.read_text(encoding="utf-8") if STATE_FILE.exists() else None
+
+    if old is None:
+        print("首次記錄完成")
+    elif new != old:
+        diff = difflib.unified_diff(old.splitlines(), new.splitlines(), lineterm="", n=0)
+        changes = [d for d in diff if d[:1] in "+-" and d[:3] not in ("+++", "---")]
+        notify("台灣虎航公告已更新\n" + URL + "\n\n" + "\n".join(changes[:60]))
+    else:
+        print("無變動")
+
+    STATE_FILE.write_text(new, encoding="utf-8")
+
+
+if __name__ == "__main__":
+    main()
